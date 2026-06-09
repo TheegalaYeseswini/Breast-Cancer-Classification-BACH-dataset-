@@ -170,15 +170,15 @@ This design encourages the model not only to predict the correct class, but also
 
 ### Training curves
 
-![Training curves](./Focal+dist trainingcurves.png)
+![Training curves](./FDtrainingcurves.png)
 
 ### Confusion matrix
 
-![Confusion matrix](./Focal+dist confusionmatrix.png)
+![Confusion matrix](./FDconfusionmatrix.png)
 
 ### ROC curves
 
-![ROC curves](./Focal+dist ROCcurves.png)
+![ROC curves](./FDROCcurves.png)
 
 ## Project Structure
 
