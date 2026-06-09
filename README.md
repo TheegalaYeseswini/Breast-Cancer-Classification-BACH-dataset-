@@ -223,6 +223,12 @@ In short, the repository contributes:
 - a stronger final model with `66.25%` validation accuracy
 - clear visual artifacts and notebook-based reproducibility
 
+## Contributions
+
+* **Yeseswini Theegala**: Spearheaded the research and implementation of the Focal Distribution (`focaldist`) method. This included setting up the core logic, running the primary experiments, and fine-tuning the approach to handle edge cases effectively.
+* **Aditya Chauhan**: Played a major role in implementing the Cross-Entropy pipeline. Responsibilities included integrating the standard baseline and ensuring the training logic ran smoothly. Additionally, collaborated with Yeseswini to assist in debugging and optimizing the `focaldist` code.
+* **Harshit Patidhar**: Collaborated closely on the Cross-Entropy implementation. Focused on structuring the necessary data workflows, setting up evaluation metrics, and ensuring reliable model validation processes.
+
 ## Citation
 
 If you use this repository in academic or educational work, please cite the original BACH / ICIAR 2018 challenge dataset and reference this project repository as the implementation source.
