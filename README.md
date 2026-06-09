@@ -1,232 +1,228 @@
-# DSResNet50 — BACH Breast Cancer Histology Classifier
+# DSResNet-50 for BACH Breast Histology Classification
 
-A Kaggle-optimised PyTorch training notebook for 4-class breast cancer histopathology image classification on the [BACH dataset](https://iciar2018-challenge.grand-challenge.org/). Built around a custom **DSResNet50** architecture: a ResNet-50 backbone where all inner 3×3 convolutions are replaced with depthwise separable convolutions, optionally augmented with Squeeze-Excitation attention and Stochastic Depth regularisation.
+This repository presents a breast cancer histology classification project built on the **BACH (BreAst Cancer Histology) dataset** from the ICIAR 2018 challenge. The work studies a custom **DSResNet-50** backbone for 4-class microscopy image classification and compares two training objectives:
 
----
+- a **weighted cross-entropy baseline**
+- an **enhanced focal-plus-distance objective** used with an upgraded training recipe
 
-## Task
+The final repository is organized as a research-style project report so it can be shared directly on GitHub.
 
-Classify whole-slide microscopy images into one of four classes:
+## Abstract
 
-| Class | Description |
+Accurate histopathology classification requires sensitivity to subtle tissue morphology, class overlap, and clinically important failure modes. In this project, we redesign ResNet-50 with **depthwise separable bottleneck convolutions** to improve efficiency while retaining the multi-stage residual hierarchy that is effective for image recognition. On top of this backbone, we evaluate two training settings on the BACH 4-class classification task: a weighted cross-entropy baseline and an enhanced focal-plus-distance formulation.
+
+The strongest experiment reaches **66.25% validation accuracy**, **0.6433 macro F1**, **0.5500 Cohen's kappa**, **0.5627 MCC**, and **0.8583 macro ROC-AUC** on the repository's validation split. Relative to the cross-entropy baseline, the improved setting produces better class balance and substantially stronger agreement metrics.
+
+## Problem Setting
+
+The task is to classify breast histology images into four categories:
+
+| Class | Clinical meaning |
 |---|---|
-| **Normal** | Healthy breast tissue |
-| **Benign** | Non-cancerous abnormality |
-| **InSitu** | Carcinoma confined within ducts/lobules |
-| **Invasive** | Invasive carcinoma (highest clinical priority) |
+| `Normal` | healthy tissue |
+| `Benign` | non-malignant abnormal tissue |
+| `InSitu` | non-invasive carcinoma |
+| `Invasive` | invasive carcinoma |
 
----
+Each class contains 100 images in the standard BACH collection. The notebooks in this repository use a seeded per-class split of **80 training images and 20 validation images per class**, yielding:
 
-## Architecture: DSResNet50
+- `320` training images
+- `80` validation images
 
-Follows the standard ResNet-50 layer plan (`3-4-6-3` blocks) with three key modifications:
+## Proposed Backbone: DSResNet-50
 
-- **Depthwise Separable Convolutions** replace every inner 3×3 conv in the bottleneck blocks, reducing parameter count while preserving receptive field. The stem uses a regular 7×7 conv (cross-channel RGB patterns cannot be learned by a depth-wise filter with only 3 channels).
-- **Squeeze-Excitation (SE) blocks** are appended after each bottleneck to perform channel-wise attention (`USE_SE = True` by default, `reduction = 16`).
-- **Drop Path / Stochastic Depth** rates are distributed linearly across all 16 blocks from `0` (first block) to `STOCHASTIC_DEPTH_RATE` (last block), following the schedule from the original paper.
+`DSResNet-50` keeps the canonical ResNet-50 stage layout (`3-4-6-3`) but replaces the central spatial convolution in each bottleneck with a **depthwise separable 3x3 convolution**.
 
-```
-Input (3×H×W)
-  └─ Stem: Conv7×7 → BN → ReLU → MaxPool
-      └─ Layer 1–4: DSBottleneck blocks × [3, 4, 6, 3]
-          each block: 1×1 Conv → DS Conv3×3 → 1×1 Conv → SE → DropPath → Residual
-      └─ AdaptiveAvgPool → Dropout → Linear(2048, 4)
-```
+### Core design
 
----
+1. **Standard stem**
+   A regular `7x7` convolution is retained in the input stem so the network can learn cross-channel RGB structure at the first stage.
 
-## Key Training Features
+2. **Depthwise separable bottlenecks**
+   Every inner `3x3` convolution is factorized into:
+   - depthwise spatial filtering
+   - pointwise channel mixing
 
-### Regularisation
-- **Label smoothing** — `ε = 0.10`
-- **Dropout** — `p = 0.45` before the final linear layer
-- **Stochastic Depth** — linearly distributed drop-path rate, max `0.10`
-- **Mixup / CutMix** — applied with `MIX_PROB` (disabled by default at `BATCH_SIZE=1`; `randperm(1)` is always the identity)
+3. **Residual learning**
+   The model preserves ResNet-style skip connections and stage transitions.
 
-### Class Imbalance
-- Per-class weights derived from inverse frequency and passed directly to `CrossEntropyLoss`. All four classes are weighted purely by their sample counts — no per-class manual adjustments.
+4. **Channel attention**
+   Two attention variants appear in this project:
+   - `SEBlock` in the cross-entropy baseline notebook
+   - `ECABlock` in the improved focal-plus-distance notebook
 
-### Optimiser & Schedule
-- **AdamW** — `lr = 7e-4`, `weight_decay = 5e-4`, `betas = (0.9, 0.999)`
-- **Warmup + Cosine Annealing** — 5-epoch linear warmup, then cosine decay to `min_lr = 1e-6` over 120 epochs
+5. **Stochastic depth**
+   A linearly increasing drop-path schedule is applied across the 16 bottleneck blocks.
 
-### Mixed Precision & Gradient Accumulation
-- AMP via `torch.amp.autocast` and `GradScaler`
-- Effective batch size = 16 via 16 gradient accumulation steps (`BATCH_SIZE = 1`)
-- Gradient clipping at norm 1.0
+6. **Classification head**
+   Global average pooling is followed by dropout and a final linear classifier for 4-way prediction.
 
----
+### Why DSResNet-50?
 
-## Augmentation Pipeline
+The goal of DSResNet-50 is to keep the representational advantages of ResNet-50 while reducing the cost of spatial convolution inside the bottlenecks. For histology images, where local texture and glandular structure matter, this design offers a practical compromise between efficiency and morphological sensitivity.
 
-Augmentations were deliberately curated for high-resolution (~2048 px) histopathology slides. Several transforms present in generic pipelines were explicitly removed:
+## Repository Experiments
 
-| Removed | Reason |
-|---|---|
-| ElasticTransform / GridDistortion | Warps glandular architecture — the key InSitu vs Invasive discriminator |
-| ISONoise | Camera sensor noise is absent from slide scanners |
-| MotionBlur | Not physically present in microscopy |
-| GridDropout | Erases ~500×500 px blocks at 2048 px — destroys diagnostic regions |
-| GaussNoise `var_limit > 20` | Higher limits erase chromatin texture |
+The repository currently contains two main experiment notebooks:
 
-Retained augmentations: horizontal/vertical flip, 90° rotation, shift-scale-rotate, colour jitter, Gaussian noise, Gaussian blur, sharpening, small CoarseDropout.
+- [`crossentropy.ipynb`](./crossentropy.ipynb): weighted cross-entropy baseline
+- [`focal+distance.ipynb`](./focal+distance.ipynb): improved DSResNet-50 variant with focal-plus-distance loss
 
-**Test-Time Augmentation (TTA):** 8-fold — 4 rotations × 2 flips — averaged at inference.
+## Cross-Entropy vs Focal+Distance
 
----
+### Important note on fairness
 
-## Checkpointing
+This comparison should be read as a **project-level experiment comparison**, not as a perfectly controlled one-variable ablation. The stronger `focal+distance.ipynb` run changes more than the loss alone:
 
-The `CheckpointManager` writes to `/kaggle/working/checkpoints/`:
+- it uses **GroupNorm** instead of BatchNorm
+- it swaps **SE attention** for **ECA attention**
+- it introduces **resizing/padding to 768**
+- it enables **8-view test-time augmentation during validation**
+- it applies an **additional invasive-class weight boost**
+- it uses a different optimization schedule and training duration
 
-| File | Contents | When saved |
-|---|---|---|
-| `checkpoint_latest.pth` | Full training state | End of every epoch |
-| `checkpoint_best.pth` | Full training state | When val accuracy improves |
-| `checkpoint_epoch_NNNN.pth` | Full training state | Every 10 epochs |
-| `checkpoint_panic.pth` | Full training state | Every 50 optimiser steps (mid-epoch) |
-| `model_weights_best.pth` | Weights only (no optimiser) | When val accuracy improves |
-| `model_best_epNNNN.pth` | Weights only, unique per epoch | When val accuracy improves |
+Because of that, the observed improvement cannot be attributed only to the loss function. It is more accurate to say that the **enhanced training recipe built around focal-plus-distance supervision** outperformed the baseline configuration.
 
-`load_latest()` compares the epoch number stored in `checkpoint_latest.pth` and `checkpoint_panic.pth` and resumes from whichever is more recent.
+### Experimental summary
 
-### SIGTERM Handling
+| Setting | Backbone details | Objective | Validation accuracy | Macro F1 | Weighted F1 | Kappa | MCC | Macro ROC-AUC |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| Cross-entropy baseline | DSResNet-50 + BatchNorm + SE | weighted cross-entropy + label smoothing | `46.25%` | `0.4540` | `0.4540` | `0.2833` | `0.2943` | `0.6566` |
+| Enhanced focal-distance run | DSResNet-50 + GroupNorm + ECA | weighted focal-distance loss | `66.25%` | `0.6433` | `0.6433` | `0.5500` | `0.5627` | `0.8583` |
 
-Kaggle sends `SIGTERM` ~60 seconds before killing a kernel. A signal handler sets a global flag; the training loop checks this flag at the start of every batch and immediately writes a panic checkpoint before raising `SystemExit`. This makes interrupted long runs fully resumable.
+### Interpretation
 
----
+Compared with the baseline, the enhanced setting improves:
 
-## Evaluation Metrics
+- validation accuracy by **20.0 percentage points**
+- macro F1 by **0.1893**
+- Cohen's kappa by **0.2667**
+- MCC by **0.2684**
+- macro ROC-AUC by **0.2017**
 
-Reported after each validation epoch and in a final `best_metrics.json`:
+This suggests that the upgraded recipe is better at handling hard examples and achieving more balanced multi-class performance, especially on diagnostically sensitive categories.
 
-- Per-class Precision, Recall, F1 (via `classification_report`)
-- Cohen's Kappa
-- Matthews Correlation Coefficient (MCC)
-- ROC-AUC (macro and weighted, one-vs-rest)
-- Raw and row-normalised confusion matrices
+## Final Best Result
 
-Plots saved to `/kaggle/working/logs/`: `training_curves.png`, `confusion_matrix.png`, `roc_curves.png`.
+The best run reported in this repository comes from [`focal+distance.ipynb`](./focal+distance.ipynb).
 
----
+### Final validation metrics
 
-## Configuration
+| Class | Precision | Recall | F1 |
+|---|---:|---:|---:|
+| `Normal` | `0.7273` | `0.8000` | `0.7619` |
+| `Benign` | `0.5833` | `0.3500` | `0.4375` |
+| `InSitu` | `0.7333` | `0.5500` | `0.6286` |
+| `Invasive` | `0.6129` | `0.9500` | `0.7451` |
 
-All hyperparameters live in the `Config` class at the top of the notebook. Key fields:
+Overall:
 
-```python
-class Config:
-    CLASSES      = ["Benign", "InSitu", "Invasive", "Normal"]
-    EPOCHS       = 120
-    BATCH_SIZE   = 1
-    ACCUMULATION_STEPS = 16   # effective batch = 16
-    LR           = 7e-4
-    WEIGHT_DECAY = 5e-4
-    DROPOUT      = 0.45
-    USE_SE       = True
-    STOCHASTIC_DEPTH_RATE  = 0.10
-    LABEL_SMOOTHING        = 0.10
-    PATIENCE               = 30
-    INTRA_EPOCH_SAVE_STEPS = 50   # panic checkpoint frequency
-```
+- Accuracy: `66.25%`
+- Macro F1: `0.6433`
+- Weighted F1: `0.6433`
+- Cohen's kappa: `0.5500`
+- Matthews correlation coefficient: `0.5627`
+- Macro ROC-AUC: `0.8583`
+- Weighted ROC-AUC: `0.8583`
 
----
+The strongest recall is obtained for the `Invasive` class (`0.95`), which is encouraging from a clinical prioritization perspective.
 
+## Methodological Details
 
-## Inference
-Final val_acc (best ckpt): 46.25%  |  best ever: 46.25%
+### Baseline training recipe
 
-==============================================================
-  EVALUATION METRICS
-==============================================================
-  Class         Precision     Recall         F1   Support
-  ----------------------------------------------------------
-  Benign           0.7143     0.5000     0.5882        20
-  InSitu           0.3548     0.5500     0.4314        20
-  Invasive         0.5000     0.2000     0.2857        20
-  Normal           0.4444     0.6000     0.5106        20
-  ----------------------------------------------------------
-  macro avg        0.5034     0.4625     0.4540        80
-  weighted avg     0.5034     0.4625     0.4540        80
+The cross-entropy notebook uses:
 
-  Cohen Kappa     : 0.2833
-  MCC             : 0.2943
-  ROC-AUC macro   : 0.6566
-  ROC-AUC weighted: 0.6566
-==============================================================
+- weighted `CrossEntropyLoss`
+- label smoothing
+- AdamW
+- warmup + cosine decay
+- stochastic depth
+- dropout before classification
+- optional TTA for inference
 
-### From weights-only file (recommended)
+### Enhanced training recipe
 
-```python
-model, meta = load_model_for_inference(
-    "/kaggle/working/checkpoints/model_weights_best.pth"
-)
-result = predict_image(model, "path/to/image.tif", cfg, device, tta=True)
-# {'class': 'Invasive', 'confidence': 0.91, 'probabilities': {...}}
-```
+The focal-distance notebook adds or modifies:
 
-### Resuming training from a specific checkpoint
+- custom **FocalDistanceLoss**
+- GroupNorm-based DSResNet-50 blocks
+- ECA channel attention
+- 8-view validation TTA
+- image resizing/padding to `768 x 768`
+- class reweighting with an extra boost for `Invasive`
 
-```python
-model, optimizer, scheduler, scaler, start_epoch, t_hist, v_hist = \
-    resume_training_checkpoint("checkpoints/checkpoint_best.pth")
-```
+### FocalDistanceLoss
 
-### ONNX export
+The custom loss combines:
 
-```python
-export_onnx(
-    weights_path="checkpoints/model_weights_best.pth",
-    out_path="model_best.onnx",
-    input_h=512, input_w=512,   # spatial size is dynamic at runtime
-)
-```
+1. **cross-entropy term**
+2. **focal reweighting term**
+3. **distance penalty**
 
-Exported with `dynamic_axes` on batch, height, and width — the ONNX model accepts arbitrary spatial resolution at inference.
+The distance term penalizes predictions according to the squared gap between the expected class index and the target class index. In implementation form, the loss is:
 
----
+`focal_loss + alpha_dist * distance_penalty`
 
-## Requirements
+This design encourages the model not only to predict the correct class, but also to avoid large categorical mistakes.
 
-| Package | Role |
-|---|---|
-| `torch` ≥ 2.x | Core framework (CUDA recommended) |
-| `albumentations` | Augmentation pipeline |
-| `opencv-python` | Image loading |
-| `scikit-learn` | Metrics |
-| `seaborn` | Confusion matrix plots |
-| `Pillow` | Fallback image loading |
+## Visual Results
 
-Missing packages are auto-installed at cell startup via `pip_install`.
+### Training curves
 
----
+![Training curves](./trainingcurves.png)
 
-## Dataset Layout
+### Confusion matrix
 
-The dataset auto-discovery function walks `/kaggle/input` and finds the first directory containing all four class subfolders:
+![Confusion matrix](./confusionmatrix.png)
 
-```
-/kaggle/input/
-  └─ <dataset-name>/
-      ├─ Benign/
-      │   ├─ b001.tif
-      │   └─ ...
-      ├─ InSitu/
-      ├─ Invasive/
-      └─ Normal/
+### ROC curves
+
+![ROC curves](./ROCcurves.png)
+
+## Project Structure
+
+```text
+.
+|-- README.md
+|-- crossentropy.ipynb
+|-- focal+distance.ipynb
+|-- trainingcurves.png
+|-- confusionmatrix.png
+`-- ROCcurves.png
 ```
 
-Supported image extensions: `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`, `.bmp`.
+## Reproducibility
 
-An 80/20 stratified split is applied per class (seeded, shuffled within class before splitting).
+The experiments were developed as notebook-based PyTorch pipelines. Core dependencies used across the notebooks include:
 
----
+- `torch`
+- `albumentations`
+- `opencv-python`
+- `scikit-learn`
+- `Pillow`
+- `matplotlib`
+- `seaborn`
 
-## Downloading Weights from Kaggle
+The notebooks were originally written for a Kaggle-style environment, so some paths and output locations may need small adjustments when reproduced locally.
 
-After training, run the **"Save to Kaggle Output"** cell. It copies:
-- All `model_best_epNNNN.pth` backups
-- `model_weights_best.pth`
-- `checkpoint_best.pth`
+## Limitations
 
-to `/kaggle/working/` (the top-level Output directory). From the Kaggle UI: **Output tab → right sidebar → download**.
+- The repository currently contains **notebooks rather than a packaged training module**.
+- The experiment comparison is **not a strict ablation**, since the improved run changes both architecture and training procedure.
+- Results are reported on a **single repository validation split**, not on repeated cross-validation.
+
+## Conclusion
+
+This project shows that a **depthwise separable ResNet-50 backbone** is a viable architecture for breast histology image classification, and that a stronger training recipe centered on a **focal-plus-distance objective** can substantially outperform a weighted cross-entropy baseline on the BACH task.
+
+In short, the repository contributes:
+
+- a custom `DSResNet-50` histology classifier
+- a baseline-to-improved experiment comparison
+- a stronger final model with `66.25%` validation accuracy
+- clear visual artifacts and notebook-based reproducibility
+
+## Citation
+
+If you use this repository in academic or educational work, please cite the original BACH / ICIAR 2018 challenge dataset and reference this project repository as the implementation source.
